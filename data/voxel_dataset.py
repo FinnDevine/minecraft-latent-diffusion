@@ -10,7 +10,7 @@ class VoxelDataset(Dataset):
     """Dataset for voxel grids stored as a numpy archive."""
 
     def __init__(self, voxel_path: str):
-        self.voxels = np.load(voxel_path)
+        self.voxels = np.load(voxel_path, mmap_mode="r")
 
     def __len__(self) -> int:  # type: ignore[override]
         return self.voxels.shape[0]
@@ -24,7 +24,7 @@ class LatentDataset(Dataset):
     """Dataset for precomputed latent tensors."""
 
     def __init__(self, latent_path: str):
-        self.latents = np.load(latent_path)
+        self.latents = np.load(latent_path, mmap_mode="r")
 
     def __len__(self) -> int:  # type: ignore[override]
         return self.latents.shape[0]
