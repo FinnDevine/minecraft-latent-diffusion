@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
+from typing import Dict, Any
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +15,34 @@ import numpy as np
 from data.voxel_dataset import LatentDataset, VoxelDataset
 from models.autoencoder import VoxelAutoencoder
 from models.latent_unet import LatentUNet3D
+
+
+def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(chunk_size):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _stat_signature(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    stat = path.stat()
+    signature = f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    return hashlib.sha256(signature.encode()).hexdigest()
+
+
+def _latent_metadata(
+    voxel_path: str, autoencoder_path: str, resolution: int
+) -> Dict[str, Any]:
+    voxel_sig = _stat_signature(Path(voxel_path))
+    ae_hash = _hash_file(Path(autoencoder_path))
+    return {
+        "voxel_signature": voxel_sig,
+        "autoencoder_hash": ae_hash,
+        "resolution": resolution,
+    }
 
 
 def prepare_noise_schedule(timesteps: int, beta_start: float = 1e-4, beta_end: float = 0.02):
@@ -28,8 +58,20 @@ def maybe_precompute_latents(
     latent_path: str,
     batch_size: int,
     device: torch.device,
+    *,
+    autoencoder_path: str,
+    resolution: int,
 ) -> None:
-    if Path(latent_path).exists():
+    latent_file = Path(latent_path)
+    metadata_file = latent_file.with_name(f"{latent_file.stem}_metadata.json")
+
+    requested_meta = _latent_metadata(voxel_path, autoencoder_path, resolution)
+    existing_meta = {}
+    if metadata_file.exists():
+        with metadata_file.open("r", encoding="utf-8") as f:
+            existing_meta = json.load(f)
+
+    if latent_file.exists() and requested_meta == existing_meta:
         return
 
     dataset = VoxelDataset(voxel_path)
@@ -45,6 +87,8 @@ def maybe_precompute_latents(
 
     Path(latent_path).parent.mkdir(parents=True, exist_ok=True)
     np.save(latent_path, np.concatenate(latents, axis=0))
+    with metadata_file.open("w", encoding="utf-8") as f:
+        json.dump(requested_meta, f, indent=2)
 
 
 def train_latent_diffusion(args: argparse.Namespace) -> None:
@@ -60,7 +104,13 @@ def train_latent_diffusion(args: argparse.Namespace) -> None:
         param.requires_grad = False
 
     maybe_precompute_latents(
-        autoencoder, args.voxel_path, args.latent_path, args.batch_size, device
+        autoencoder,
+        args.voxel_path,
+        args.latent_path,
+        args.batch_size,
+        device,
+        autoencoder_path=args.autoencoder_path,
+        resolution=args.resolution,
     )
 
     latent_dataset = LatentDataset(args.latent_path)
